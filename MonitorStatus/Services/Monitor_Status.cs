@@ -14,62 +14,104 @@ namespace MonitorStatus.Services
 {
     public class Monitor_Status : IMonitorStatus
     {
-        private static CancellationTokenSource source = new();
+        private static CancellationTokenSource source = new CancellationTokenSource();
         private readonly KafkaSettings _kafkaSettings;
         private readonly IHubContext<MonitorHub> _hubContext;
 
-        private readonly Dictionary<string, Dictionary<int, int>> messageCounts = new();
+        private readonly object messageCountsLock = new object();
+        private readonly Dictionary<int, Dictionary<int, int>> messageCounts = new();
+
+        private List<string> subscribedTopics = new List<string>();
+        private IConsumer<Ignore, string> consumer;
+        private ConsumerConfig config;
 
         public Monitor_Status(IOptions<KafkaSettings> kafkaSettings, IHubContext<MonitorHub> hubContext)
         {
             _kafkaSettings = kafkaSettings.Value;
             _hubContext = hubContext;
-        }
 
-        public Task<OperationResult> Start()
-        {
-            var config = new ConsumerConfig
+            config = new ConsumerConfig
             {
                 BootstrapServers = _kafkaSettings.BootstrapServers,
                 GroupId = _kafkaSettings.GroupId,
                 AutoOffsetReset = AutoOffsetReset.Earliest,
             };
 
-            var consumer = new ConsumerBuilder<Ignore, string>(config).Build();
-            consumer.Subscribe(_kafkaSettings.Topic);
+            consumer = new ConsumerBuilder<Ignore, string>(config).Build();
+        }
+
+        public async Task<OperationResult> Subscribe(string topic)
+        {
+
+            if (consumer == null)
+                return OperationResult.Failed;
+
+            if (!subscribedTopics.Contains(topic))
+            {
+                subscribedTopics.Add(topic);
+                source.Cancel();
+                consumer.Subscribe(subscribedTopics);
+            }
+
+            Console.WriteLine("Subscribed to new topic : " +topic);
+            await Start();
+
+            return OperationResult.Success;
+        }
+
+        public Task<OperationResult> Start()
+        {
+            Console.WriteLine("Starting stream active/unactive comm");
+            source = new CancellationTokenSource();
 
             Task.Run(() =>
             {
                 while (!source.Token.IsCancellationRequested)
                 {
-                    var result = consumer.Consume();
-                    consumer.Commit(result);
-
-                    string topic = result.Topic;
-                    int partition = result.Partition.Value;
-
-                    if (!messageCounts.ContainsKey(topic))
+                    try
                     {
-                        messageCounts[topic] = new Dictionary<int, int>();
-                    }
+                        Console.WriteLine("test");
+                        var result = consumer.Consume();
+                        consumer.Commit(result);
 
-                    if (!messageCounts[topic].ContainsKey(partition))
+                        int topic = 0;
+                        Int32.TryParse(result.Topic,out topic);
+                        int partition = result.Partition.Value;
+
+                        lock (messageCountsLock)
+                        {
+                            if (!messageCounts.ContainsKey(topic))
+                            {
+                                messageCounts[topic] = new Dictionary<int, int>();
+                            }
+
+                            if (!messageCounts[topic].ContainsKey(partition))
+                            {
+                                messageCounts[topic][partition] = 0;
+                            }
+
+                            messageCounts[topic][partition]++;
+                        }
+                    }
+                    catch(Exception e)
                     {
-                        messageCounts[topic][partition] = 0;
+                        Console.WriteLine(e);
                     }
-
-                    messageCounts[topic][partition]++;
+                    
+                        
                 }
-            });
+            },source.Token);
 
             Task.Run(async () =>
             {
                 while (!source.Token.IsCancellationRequested)
                 {
-                    await Task.Delay(3000); 
                     await BroadcastUpdate();
+                    await Task.Delay(3000, source.Token); 
                 }
-            });
+            }, source.Token);
+
+
 
             return Task.FromResult(OperationResult.Success);
         }
@@ -77,15 +119,18 @@ namespace MonitorStatus.Services
         private async Task BroadcastUpdate()
         {
             await _hubContext.Clients.All.SendAsync("UpdateMessageCounts", messageCounts);
-            //ResetValues();
+            ResetValues();
         }
         private void ResetValues()
         {
-            foreach (var outkey in messageCounts)
+            lock (messageCountsLock)
             {
-                foreach (var key in outkey.Value.Keys.ToList())
+                foreach (var outkey in messageCounts)
                 {
-                    outkey.Value[key] = 0;
+                    foreach (var key in outkey.Value.Keys.ToList())
+                    {
+                        outkey.Value[key] = 0;
+                    }
                 }
             }
         }

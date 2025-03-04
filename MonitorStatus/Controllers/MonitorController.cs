@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using MonitorStatus.Services;
+using MonitorStatus.Entities;
 
 namespace MonitorStatus.Controllers
 {
@@ -19,19 +20,22 @@ namespace MonitorStatus.Controllers
                 IMonitorService = _IMonitorService;
             }
 
-            [HttpGet("Start")]
-            public void Start()
+            [HttpPost("AddTopic")]
+            public Task<OperationResult> AddNewTopic([FromBody] ChannelDTO request)
             {
-                 IMonitorService.StartCheck();
-                 IMonitorService.Start();
+                return IMonitorService.Subscribe(request.uavNumber.ToString());
             }
+
 
             [HttpGet("Stop")]
             public void Stop()
             {
                 IMonitorService.Stop();
             }
-        }
+        
+
+       
+    }
 
 }
 

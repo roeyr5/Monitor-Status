@@ -7,6 +7,7 @@ namespace MonitorStatus.Services
 {
     public interface IMonitorStatus
     {
+        public Task<OperationResult> Subscribe(string topic);
         public Task<OperationResult> Start();
         public Task<OperationResult> Stop();
         public void StartCheck();
